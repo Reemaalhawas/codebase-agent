@@ -24,13 +24,27 @@ def interactive():
         print()
 
 
+def run_eval(args):
+    from eval import run_eval, print_report, CASES
+    cases = CASES
+    if args.cases:
+        ids = set(args.cases)
+        cases = [c for c in CASES if c.id in ids]
+    results = run_eval(REPO, cases)
+    print_report(results)
+
+
 def main():
     p = argparse.ArgumentParser()
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("interactive")
+    ep = sub.add_parser("eval")
+    ep.add_argument("--cases", nargs="+")
     args = p.parse_args()
     if args.cmd == "interactive":
         interactive()
+    elif args.cmd == "eval":
+        run_eval(args)
 
 
 if __name__ == "__main__":

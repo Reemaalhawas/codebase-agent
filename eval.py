@@ -1,4 +1,10 @@
+import json
+import time
 from dataclasses import dataclass, field
+
+import anthropic
+
+from agent import Agent, AgentResult
 
 
 @dataclass
@@ -113,3 +119,108 @@ CASES = [
         criteria="Must give a useful lifecycle overview without reading every function. Must not hit the step cap.",
     ),
 ]
+
+
+@dataclass
+class EvalResult:
+    case: EvalCase
+    result: AgentResult
+    passed: bool
+    reasoning: str
+    failure_mode: str | None
+
+
+JUDGE_PROMPT = """You are evaluating an AI agent that answers questions about a code repository.
+
+Given the question, the agent's answer, and a pass criterion, decide if the answer passes or fails.
+
+Reply with only valid JSON, no markdown:
+{"passed": true, "reasoning": "one sentence", "failure_mode": null}
+
+If failed, set failure_mode to one of: hallucinated, accepted_false_premise, hit_step_cap, refused_to_answer, missed_files, excessive_tool_use
+"""
+
+
+def judge(case: EvalCase, r: AgentResult) -> tuple[bool, str, str | None]:
+    if r.hit_cap:
+        return False, "hit the step cap", "hit_step_cap"
+
+    client = anthropic.Anthropic()
+    tools_used = ", ".join(f"{t.name}" for t in r.tool_calls) or "none"
+    msg = f"Question: {case.question}\n\nAnswer:\n{r.answer or '(no answer)'}\n\nTools used: {tools_used}\n\nCriterion: {case.criteria}"
+
+    resp = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=256,
+        system=JUDGE_PROMPT,
+        messages=[{"role": "user", "content": msg}],
+    )
+    raw = resp.content[0].text.strip()
+    try:
+        s, e = raw.find("{"), raw.rfind("}") + 1
+        d = json.loads(raw[s:e])
+        return bool(d["passed"]), d["reasoning"], d.get("failure_mode")
+    except Exception:
+        return False, f"judge parse error: {raw[:100]}", None
+
+
+def run_eval(repo: str, cases: list[EvalCase] | None = None) -> list[EvalResult]:
+    if cases is None:
+        cases = CASES
+
+    agent = Agent(repo=repo)
+    results = []
+
+    for i, case in enumerate(cases, 1):
+        print(f"\n[{i}/{len(cases)}] {case.id} ({case.category})")
+        print(f"Q: {case.question[:80]}...")
+
+        r = agent.run(case.question)
+        print(f"  steps={r.steps}  tools={[t.name for t in r.tool_calls]}  cap={r.hit_cap}")
+
+        passed, reasoning, mode = judge(case, r)
+        print(f"  {'PASS' if passed else 'FAIL'}: {reasoning}")
+        if mode:
+            print(f"  mode: {mode}")
+
+        results.append(EvalResult(case=case, result=r, passed=passed, reasoning=reasoning, failure_mode=mode))
+
+        if i < len(cases):
+            time.sleep(0.5)
+
+    return results
+
+
+def print_report(results: list[EvalResult]) -> None:
+    total = len(results)
+    passed = sum(1 for r in results if r.passed)
+
+    print(f"\n{'='*60}")
+    print(f"pass rate: {passed}/{total}  ({100 * passed // total}%)")
+
+    cats: dict[str, list[EvalResult]] = {}
+    for r in results:
+        cats.setdefault(r.case.category, []).append(r)
+
+    print("\nby category:")
+    for cat in sorted(cats):
+        cr = cats[cat]
+        p = sum(1 for r in cr if r.passed)
+        print(f"  {cat:<22} {p}/{len(cr)}")
+
+    failures = [r for r in results if not r.passed]
+    if failures:
+        print(f"\nfailures:")
+        for r in failures:
+            print(f"  [{r.case.id}] {r.reasoning}")
+            if r.failure_mode:
+                print(f"    -> {r.failure_mode}")
+
+    modes: dict[str, int] = {}
+    for r in failures:
+        if r.failure_mode:
+            modes[r.failure_mode] = modes.get(r.failure_mode, 0) + 1
+    if modes:
+        print("\nfailure modes:")
+        for m, c in sorted(modes.items(), key=lambda x: -x[1]):
+            print(f"  {m}: {c}")
