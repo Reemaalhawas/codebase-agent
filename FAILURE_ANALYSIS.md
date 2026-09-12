@@ -25,3 +25,4 @@ Pass rate: 13/17 (76%)
 ## Key takeaway
 
 The agent breaks when it needs to decide *when to stop*, not *what to look for*. The exit condition is controlled by the model, not the code — so if the model picks a bad strategy, there's nothing in the loop to catch it.
+
