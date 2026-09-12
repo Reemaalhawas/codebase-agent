@@ -2,7 +2,7 @@ import json
 import time
 from dataclasses import dataclass, field
 
-import anthropic
+import openai
 
 from agent import Agent, AgentResult
 
@@ -145,17 +145,18 @@ def judge(case: EvalCase, r: AgentResult) -> tuple[bool, str, str | None]:
     if r.hit_cap:
         return False, "hit the step cap", "hit_step_cap"
 
-    client = anthropic.Anthropic()
+    client = openai.OpenAI()
     tools_used = ", ".join(f"{t.name}" for t in r.tool_calls) or "none"
     msg = f"Question: {case.question}\n\nAnswer:\n{r.answer or '(no answer)'}\n\nTools used: {tools_used}\n\nCriterion: {case.criteria}"
 
-    resp = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=256,
-        system=JUDGE_PROMPT,
-        messages=[{"role": "user", "content": msg}],
+    resp = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {"role": "system", "content": JUDGE_PROMPT},
+            {"role": "user", "content": msg},
+        ],
     )
-    raw = resp.content[0].text.strip()
+    raw = resp.choices[0].message.content.strip()
     try:
         s, e = raw.find("{"), raw.rfind("}") + 1
         d = json.loads(raw[s:e])
